@@ -2,29 +2,128 @@
 title: "Practical Machine Learning Course Project"
 author: "SV"
 date: "March 11, 2018"
-output: html_document
+output: 
+  html_document: 
+    keep_md: yes
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+## Overview
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+Human activity recognition has emerged as a key research area in identifying human activities and in quantifying how well the activity is performed. It is now possible to collect large data sets of human activity measurements quite inexpensively. One such data set is the Weight Lifting Exercise data set.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+The goal for this project is to train a model based on a training set with appropriate features and then predict the class of the weight lifting exercise (class A indicating correct executing and class B - E indicating improper execution).
 
-```{r cars}
-summary(cars)
+``` {r echo=FALSE,message=FALSE}
+library(caret)
+training <- read.csv("pml-training.csv", stringsAsFactors=FALSE)
+
+t1 <- apply(training, 2, function(y) sum(is.na(y))/nrow(training))
 ```
 
-## Including Plots
+## Exploratory Analysis 
 
-You can also embed plots, for example:
+Initial analysis of the data shows that there are `r sum(t1[] >= 0.95)` features in the training set that do not contain any value for more than 95% of the rows.
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+## Feature Selection for Model fitting
+Let us identify variables with very little variability since these are not good predictors.
+``` {r echo=FALSE}
+nsv <- nearZeroVar(training, saveMetrics=TRUE)
+
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+Results of the "nearZeroVar"" function indicate that there are `r sum(nsv$nzv)` variables that are not good predictors. So , we will remove these from the training data set.
+
+``` {r echo=FALSE}
+corrected_training <- training[, !nsv$nzv]
+```
+
+Continued analysis of the data shows that there are still some computed variables like standard deviation, variance, mean, min, max etc that can be omitted from training the model. These can be computed from the raw data and hence not useful for model training. So, we will remove them.
+
+``` {r echo=FALSE}
+stat_features <- grepl("^var", names(corrected_training)) | grepl("^std",names(corrected_training)) |
+      grepl("^avg", names(corrected_training)) | grepl("^min", names(corrected_training)) |
+	  grepl("^max", names(corrected_training)) | grepl("^amplitude", names(corrected_training))
+corrected_training <- corrected_training[, !stat_features]
+```
+
+
+The resulting data has `r ncol(corrected_training)` features. Out of this, the first 6 features describe the row number, the identification of the person who did the exercise, the date/time stamps when the exercise was performed and the sliding window number form which the measurements were extracted. These do not have any bearing on the actual exercise and the measurements generated when performing the exercise. So, we will remove these features also before training the model.
+
+``` {r echo=FALSE}
+corrected_training <- corrected_training[, 7:59]
+```
+
+## Cross validation Data Set
+For the purposes of cross validating our model, we will randomly select 25% of the training data as a hold out set to perform cross validation.
+
+``` {r echo=FALSE}
+trainIndex = createDataPartition(corrected_training$classe, p = 0.75,list=FALSE)
+training_final = corrected_training[trainIndex,]
+cv_final = corrected_training[-trainIndex,]
+```
+
+There are now `r nrow(training_final)` rows to train the model and `r nrow(cv_final)` rows to perform cross validation.
+
+## Model Fitting
+Now, we will attempt to fit a random forest model using the training set (after removing unwanted features and after removing the rows for the cross validation). The seed has been set to 12321 to ensure reproducibility.
+
+```{r echo=FALSE, message=FALSE}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+```
+
+``` {r cache=TRUE}
+set.seed(12321)
+x <- training_final[,-53]
+y <- training_final[,53]
+fitControl <- trainControl(method = "cv",
+                           number = 5,
+                           allowParallel = TRUE)
+
+fit <- train(x,y, method="rf",data=training_final,trControl = fitControl)
+```
+
+``` {r echo=FALSE}
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+## Accuracy
+
+The **model accuracy** based on the training data is as follows:
+```{r echo=FALSE}
+fit
+```
+The **accuracy of each fold** as part of the cross validation within the training process is:
+``` {r echo=FALSE}
+fit$resample
+```
+
+## Out of sample error
+
+The confusion matrix when predicting against cross validation set is
+``` {r echo=FALSE}
+cvStats <- confusionMatrix(cv_final$classe, predict(fit, cv_final))
+cvStats
+```
+The **Out of sample error rate** when predicting on the cross validation data set is `r 1 - cvStats$overall[1]`
+
+## Plots
+
+The plot of randomly selected predictors vs accuracy (using cross validation) is provided below
+``` {r echo=FALSE}
+plot(fit, main="Plot Randomly selected predictors vs accuracy")
+```
+
+Importance of the various features in the model:
+``` {r echo=FALSE, message=FALSE}
+library(randomForest)
+varImpPlot(fit$finalModel, main="Variance Importance Plot for the Final Fitted Model")
+```
+
